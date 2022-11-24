@@ -1,12 +1,18 @@
 package com.pritesh.calldetection;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.telephony.PhoneStateListener;
+import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.util.Log;
+
+import androidx.annotation.RequiresApi;
+import androidx.core.content.ContextCompat;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -48,24 +54,46 @@ public class CallDetectionManagerModule
         telephonyManager = (TelephonyManager) this.reactContext.getSystemService(
                 Context.TELEPHONY_SERVICE);
         callDetectionPhoneStateListener = new CallDetectionPhoneStateListener(this);
-        telephonyManager.listen(callDetectionPhoneStateListener,
-                PhoneStateListener.LISTEN_CALL_STATE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (reactContext.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                telephonyManager.registerTelephonyCallback(ContextCompat.getMainExecutor(reactContext), callStateListener);
+            }
+        } else {
+            telephonyManager.listen(callDetectionPhoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+        }
 
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    private static abstract class CallStateListener extends TelephonyCallback implements TelephonyCallback.CallStateListener {
+        @Override
+        abstract public void onCallStateChanged(int state);
+    }
+
+    private boolean callStateListenerRegistered = false;
+    private CallStateListener callStateListener = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) ?
+            new CallStateListener() {
+                @Override
+                public void onCallStateChanged(int state) {
+                    phoneCallStateUpdated(state, null);
+                }
+            } : null;
+
     @ReactMethod
     public void stopListener() {
-        telephonyManager.listen(callDetectionPhoneStateListener,
-                PhoneStateListener.LISTEN_NONE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            telephonyManager.unregisterTelephonyCallback(callStateListener);
+        } else {
+            telephonyManager.listen(callDetectionPhoneStateListener, PhoneStateListener.LISTEN_NONE);
+            callDetectionPhoneStateListener = null;
+        }
         telephonyManager = null;
-        callDetectionPhoneStateListener = null;
     }
 
     /**
      * @return a map of constants this module exports to JS. Supports JSON types.
      */
-    public
-    Map<String, Object> getConstants() {
+    public Map<String, Object> getConstants() {
         Map<String, Object> map = new HashMap<String, Object>();
         map.put("Incoming", "Incoming");
         map.put("Offhook", "Offhook");
@@ -115,27 +143,31 @@ public class CallDetectionManagerModule
         jsModule = this.reactContext.getJSModule(CallStateUpdateActionModule.class);
 
         switch (state) {
-            //Hangup
+            // Hangup
             case TelephonyManager.CALL_STATE_IDLE:
-                if(wasAppInOffHook == true) { // if there was an ongoing call and the call state switches to idle, the call must have gotten disconnected
+                if (wasAppInOffHook == true) { // if there was an ongoing call and the call state switches to idle, the
+                    // call must have gotten disconnected
                     jsModule.callStateUpdated("Disconnected", phoneNumber);
-                } else if(wasAppInRinging == true) { // if the phone was ringing but there was no actual ongoing call, it must have gotten missed
+                } else if (wasAppInRinging == true) { // if the phone was ringing but there was no actual ongoing call,
+                    // it must have gotten missed
                     jsModule.callStateUpdated("Missed", phoneNumber);
                 }
 
-                //reset device state
+                // reset device state
                 wasAppInRinging = false;
                 wasAppInOffHook = false;
                 break;
-            //Outgoing
+            // Outgoing
             case TelephonyManager.CALL_STATE_OFFHOOK:
-                //Device call state: Off-hook. At least one call exists that is dialing, active, or on hold, and no calls are ringing or waiting.
+                // Device call state: Off-hook. At least one call exists that is dialing,
+                // active, or on hold, and no calls are ringing or waiting.
                 wasAppInOffHook = true;
                 jsModule.callStateUpdated("Offhook", phoneNumber);
                 break;
-            //Incoming
+            // Incoming
             case TelephonyManager.CALL_STATE_RINGING:
-                // Device call state: Ringing. A new call arrived and is ringing or waiting. In the latter case, another call is already active.
+                // Device call state: Ringing. A new call arrived and is ringing or waiting. In
+                // the latter case, another call is already active.
                 wasAppInRinging = true;
                 jsModule.callStateUpdated("Incoming", phoneNumber);
                 break;
